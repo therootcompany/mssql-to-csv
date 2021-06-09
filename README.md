@@ -1,7 +1,14 @@
 # mssql-to-csv
 
 A small, lightweight self-contained Go program that eats MS SQL for breakfast
-and spits out CSV for lunch
+and spits out CSV for lunch.
+
+# Features
+
+- [x] From SQL to CSV (with proper escapes)
+- [x] Map from SQL columns to CSV fields - see [`map.txt`](/map.txt)
+- [x] Upload directly to S3 - see [`example.env`](/example.env)
+- [x] Run continuously in a loop (ex: `REPORT_FREQUENCY=1h`)
 
 # Usage
 
