@@ -1,0 +1,21 @@
+# secrets should never be exposed
+*.env
+.env
+.env.*
+env.*
+!example.env
+
+# tmp and build files we might create
+/mssql-to-csv
+xversion.go
+*.exe
+dist/
+log.txt
+*.log
+
+# rando sys and tmp files
+.*.sw*
+.DS_Store
+tmp.*
+*.tmp
+*.tmp.*

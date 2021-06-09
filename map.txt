@@ -1,0 +1,5 @@
+Name of Fruit:       FruitName
+Type of Fruit:       FruitType
+Extra Info:          DOESNT_EXIST
+Quantity of Fruit:   FruitQuantity
+Date:                CreatedAt

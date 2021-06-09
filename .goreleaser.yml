@@ -1,0 +1,21 @@
+builds:
+  - env:
+      - CGO_ENABLED=0
+    main: ./main.go
+    binary: mssql-to-csv
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - 386
+      - amd64
+      - arm
+      - arm64
+    goarm:
+      - 6
+      - 7
+archives:
+  - format_overrides:
+      - goos: windows
+        format: zip
