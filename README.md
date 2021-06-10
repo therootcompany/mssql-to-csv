@@ -22,7 +22,7 @@ Example:
 mssql-to-csv.exe --env env.txt --map map.txt --log log.txt
 ```
 
-To see the full CSV output in the logs add `--debug`:
+To see some extra output in the logs add `--debug`:
 
 ```pwsh
 mssql-to-csv.exe --env env.txt --map map.txt --log log.txt --debug
