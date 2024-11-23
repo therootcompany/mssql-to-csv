@@ -85,6 +85,10 @@ You will need:
 - `.env`, which can be modeled after [`example.env`](/example.env)
   - Note: Do **NOT** commit secrets, tokens, passwords, etc to git!!
 
+## Script for Linux & Mac
+
+See <https://github.com/therootcompany/mssql-to-csv/issues/2>.
+
 # Build
 
 Here's how you build from source.
