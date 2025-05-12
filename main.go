@@ -303,9 +303,7 @@ func Report(
 					fields[csvFieldIndex] = v.String()
 				}
 			default:
-				if nil != v {
-					fields[csvFieldIndex] = fmt.Sprintf("%v", v)
-				}
+				fields[csvFieldIndex] = fmt.Sprintf("%v", v)
 			}
 			// because MSSQL likes to export VARCHAR with the full possible width???
 			// (there's probably a better fix for this, but I don't know much about MSSQL)
