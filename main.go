@@ -47,13 +47,20 @@ func main() {
 
 	cmdname := os.Args[0]
 	here := filepath.Dir(cmdname)
+	defaultMapPath := filepath.Join(here, "map.txt")
+	file, err := os.OpenFile(defaultMapPath, os.O_RDONLY, 0)
+	file.Close()
+	if err != nil {
+		defaultMapPath = ""
+	}
+
 	flag.StringVar(&csvpath, "csv", "out.csv",
 		"full path to csv output",
 	)
 	flag.StringVar(&envpath, "env", filepath.Join(here, ".env"),
 		"full path to the .env file with settings and MS SQL & S3 credentials",
 	)
-	flag.StringVar(&mappath, "map", filepath.Join(here, "map.txt"),
+	flag.StringVar(&mappath, "map", defaultMapPath,
 		"full path to the map.txt that maps MS SQL columns to CSV fields",
 	)
 	flag.StringVar(&logpath, "log", "",
@@ -141,12 +148,15 @@ func copyToCSV() error {
 		return fmt.Errorf("could not connect: %w", err)
 	}
 
-	mappings, err := mapper.Parse(mappath, func(err error) error {
-		log.Printf("line error: %v\n", err)
-		return nil
-	})
-	if nil != err {
-		return fmt.Errorf("could not connect: %w", err)
+	var mappings []mapper.NamePair = nil
+	if len(mappath) > 0 {
+		mappings, err = mapper.Parse(mappath, func(err error) error {
+			log.Printf("line error: %v\n", err)
+			return nil
+		})
+		if nil != err {
+			return fmt.Errorf("could not read: %w", err)
+		}
 	}
 
 	tspath = retimestamp(csvpath)
@@ -243,7 +253,7 @@ func Report(
 	}
 
 	requiredCols := map[DBColName]CSVFieldIndex{}
-	fieldnames := []CSVFieldName{}
+	var fieldnames []CSVFieldName = nil
 	for i := range mappings {
 		pair := mappings[i]
 		requiredCols[strings.ToLower(pair.DBColumn)] = i
@@ -257,6 +267,13 @@ func Report(
 		return fmt.Errorf("could not get column names: %w", err)
 	}
 	for dbColIndex := range allcols {
+		if mappings == nil {
+			fieldname := allcols[dbColIndex]
+			fieldnames = append(fieldnames, fieldname)
+			keepers[dbColIndex] = dbColIndex
+			continue
+		}
+
 		fieldname := strings.ToLower(allcols[dbColIndex])
 		if csvFieldIndex, exists := requiredCols[fieldname]; exists {
 			keepers[dbColIndex] = csvFieldIndex
