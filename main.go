@@ -287,7 +287,7 @@ func Report(
 		return fmt.Errorf("could not write column names header: %w", err)
 	}
 
-	numfields := len(mappings)
+	numfields := len(keepers)
 	for rows.Next() {
 		var row []interface{}
 		row, err = rows.SliceScan()
