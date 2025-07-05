@@ -13,6 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
+	"github.com/therootcompany/mssql-to-csv/jsonwriter"
 	"github.com/therootcompany/mssql-to-csv/mapper"
 	"github.com/therootcompany/mssql-to-csv/mssql"
 	"github.com/therootcompany/mssql-to-csv/uploader"
@@ -30,7 +33,8 @@ var (
 
 	timestamp string
 	envpath   string
-	csvpath   string
+	outpath   string
+	asJSON    bool
 	tspath    string
 	mappath   string
 	debug     bool
@@ -38,6 +42,8 @@ var (
 
 func main() {
 	var logpath string
+	var commaStr string
+	var sqlQuery string
 
 	if len(os.Args) > 1 && ("version" == strings.TrimLeft(os.Args[1], "-") || "-V" == os.Args[1]) {
 		fmt.Printf("mssql-to-csv v%s (%s) %s\n", version, commit[:7], date)
@@ -54,8 +60,14 @@ func main() {
 		defaultMapPath = ""
 	}
 
-	flag.StringVar(&csvpath, "csv", "out.csv",
-		"full path to csv output",
+	flag.BoolVar(&asJSON, "json", false,
+		"output rows as JSON arrays",
+	)
+	flag.StringVar(&outpath, "csv", "",
+		"deprecated, see --out",
+	)
+	flag.StringVar(&outpath, "out", "",
+		"full path to csv or json output, or '-' for stdout (default out.csv or out.json)",
 	)
 	flag.StringVar(&envpath, "env", filepath.Join(here, ".env"),
 		"full path to the .env file with settings and MS SQL & S3 credentials",
@@ -63,20 +75,37 @@ func main() {
 	flag.StringVar(&mappath, "map", defaultMapPath,
 		"full path to the map.txt that maps MS SQL columns to CSV fields",
 	)
+	flag.StringVar(&commaStr, "comma", ",",
+		"replace ',' with tab, or almost any non-newline unicode character",
+	)
 	flag.StringVar(&logpath, "log", "",
 		"full path to the log file (or stdout if none supplied)",
 	)
 	flag.StringVar(&timestamp, "timestamp", "2006-01-02_15.04.05",
 		"format of timestamp suffix for csv output and S3 key, or '' for no timestamp",
 	)
+	flag.StringVar(&sqlQuery, "query", "",
+		"the query to run (falls back to REPORT_QUERY)",
+	)
 	flag.BoolVar(&debug, "debug", false,
 		"enable additional logging",
 	)
 	_ = flag.Bool("version", false, "show version info")
+
+	useStdout := !term.IsTerminal(int(os.Stdout.Fd()))
+	flag.CommandLine.Visit(func(f *flag.Flag) {
+		if f.Name == "out" || f.Name == "csv" {
+			useStdout = f.Value.String() == "-"
+		}
+	})
 	flag.Parse()
 
 	// Use .env if available
 	_ = godotenv.Load(envpath)
+
+	if len(sqlQuery) == 0 {
+		sqlQuery = os.Getenv("REPORT_QUERY")
+	}
 
 	if 0 != len(logpath) {
 		f, err := os.OpenFile(logpath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
@@ -88,8 +117,40 @@ func main() {
 		}
 	}
 
+	var out io.WriteCloser = os.Stdout
+	if !useStdout {
+		if len(outpath) == 0 {
+			outpath = "out.csv"
+			if asJSON {
+				outpath = "out.json"
+			}
+		}
+		tspath = retimestamp(outpath)
+		var err error
+		out, err = os.OpenFile(tspath, os.O_CREATE|os.O_RDWR, 0644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "could not open %q: %v", tspath, err)
+			os.Exit(1)
+		}
+	}
+
+	var roww RowWriter
+	if asJSON {
+		roww = jsonwriter.NewWriter(out)
+	} else {
+		runes := []rune(commaStr)
+		comma := runes[0]
+		csvw := csv.NewWriter(out)
+		csvw.Comma = comma
+		roww = csvw
+	}
+	defer func() {
+		// you have to let the csv know when to end
+		roww.Flush()
+	}()
+
 	// Copy once, right away
-	if err := copyToCSV(); nil != err {
+	if err := copyOut(sqlQuery, roww); nil != err {
 		log.Printf("[ERROR]:\n%v\n", err)
 		os.Exit(1)
 		return
@@ -111,7 +172,7 @@ func main() {
 	// (note: this may actually drift over the course of months)
 	for {
 		time.Sleep(duration)
-		if err := copyToCSV(); nil != err {
+		if err := copyOut(sqlQuery, roww); nil != err {
 			log.Printf("[ERROR]:\n%v\n", err)
 			return
 		}
@@ -120,7 +181,7 @@ func main() {
 	}
 }
 
-func copyToCSV() error {
+func copyOut(sqlQuery string, roww RowWriter) error {
 
 	// TODO: rename reporter.New
 	auth := &mssql.Auth{
@@ -132,7 +193,6 @@ func copyToCSV() error {
 		Catalog:  os.Getenv("MSSQL_CATALOG"),
 	}
 	tableName := os.Getenv("REPORT_TABLE")
-	sqlQuery := os.Getenv("REPORT_QUERY")
 	if 0 == len(sqlQuery) {
 		if 0 == len(tableName) {
 			return fmt.Errorf("you must set one of either REPORT_QUERY or REPORT_TABLE")
@@ -159,13 +219,7 @@ func copyToCSV() error {
 		}
 	}
 
-	tspath = retimestamp(csvpath)
-	out, err := os.OpenFile(tspath, os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		return fmt.Errorf("could not open %q: %v", tspath, err)
-	}
-
-	err = Report(db, sqlQuery, mappings, out)
+	err = Report(db, sqlQuery, mappings, roww)
 	if nil != err {
 		return fmt.Errorf("could not report: %w", err)
 	}
@@ -179,6 +233,12 @@ func copyToCSV() error {
 	return nil
 }
 
+type RowWriter interface {
+	Write([]string) error
+	Flush()
+	Error() error
+}
+
 func uploadToS3() error {
 	awsAuth := uploader.Auth{
 		AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
@@ -190,7 +250,7 @@ func uploadToS3() error {
 	// whatever.csv => whatever-2021-04-20.csv
 	key := os.Getenv("REPORT_S3_KEY")
 	if 0 == len(key) {
-		key = filepath.Base(csvpath)
+		key = filepath.Base(outpath)
 	}
 	key = retimestamp(key)
 
@@ -242,7 +302,7 @@ type CSVFieldName = string
 
 // Report generates the CSV from the database
 func Report(
-	db *sqlx.DB, sqlQuery string, mappings []mapper.NamePair, out io.Writer,
+	db *sqlx.DB, sqlQuery string, mappings []mapper.NamePair, roww RowWriter,
 ) error {
 	dateFormat := os.Getenv("REPORT_DATE_FORMAT")
 	dateEmpty := os.Getenv("REPORT_DATE_EMPTY")
@@ -251,6 +311,10 @@ func Report(
 	if err != nil {
 		return fmt.Errorf("could not query %q: %w", sqlQuery, err)
 	}
+	defer func() {
+		// don' forget to close the rows on error
+		_ = rows.Close()
+	}()
 
 	requiredCols := map[DBColName]CSVFieldIndex{}
 	var fieldnames []CSVFieldName = nil
@@ -263,11 +327,12 @@ func Report(
 	// maps between database column order and csv field order
 	keepers := map[DBColIndex]CSVFieldIndex{}
 	allcols, err := rows.Columns()
+	fmt.Fprintf(os.Stderr, "DEBUG allcols: %v\n", allcols)
 	if err != nil {
 		return fmt.Errorf("could not get column names: %w", err)
 	}
 	for dbColIndex := range allcols {
-		if mappings == nil {
+		if len(mappings) == 0 {
 			fieldname := allcols[dbColIndex]
 			fieldnames = append(fieldnames, fieldname)
 			keepers[dbColIndex] = dbColIndex
@@ -279,10 +344,10 @@ func Report(
 			keepers[dbColIndex] = csvFieldIndex
 		}
 	}
+	fmt.Fprintf(os.Stderr, "DEBUG mappings, keepers: %v %v\n", mappings, keepers)
 
-	csvw := csv.NewWriter(out)
 	// Write Header
-	err = csvw.Write(fieldnames)
+	err = roww.Write(fieldnames)
 	if err != nil {
 		return fmt.Errorf("could not write column names header: %w", err)
 	}
@@ -327,15 +392,10 @@ func Report(
 			fields[csvFieldIndex] = strings.TrimSpace(fields[csvFieldIndex])
 		}
 
-		err = csvw.Write(fields)
-		if nil != err {
-			// don' forget to close the rows on error
-			rows.Close()
+		if err = roww.Write(fields); nil != err {
 			return err
 		}
 	}
 
-	// you have to let the csv know when to end
-	csvw.Flush()
 	return nil
 }
