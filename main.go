@@ -45,17 +45,26 @@ func main() {
 	var commaStr string
 	var sqlQuery string
 
-	if len(os.Args) > 1 && ("version" == strings.TrimLeft(os.Args[1], "-") || "-V" == os.Args[1]) {
-		fmt.Printf("mssql-to-csv v%s (%s) %s\n", version, commit[:7], date)
-		os.Exit(0)
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "version":
+			fallthrough
+		case "-version":
+			fallthrough
+		case "--version":
+			fallthrough
+		case "-V":
+			fmt.Printf("mssql-to-csv v%s (%s) %s\n", version, commit[:7], date)
+			os.Exit(0)
+			return
+		}
 	}
 
 	cmdname := os.Args[0]
 	here := filepath.Dir(cmdname)
 	defaultMapPath := filepath.Join(here, "map.txt")
 	file, err := os.OpenFile(defaultMapPath, os.O_RDONLY, 0)
-	file.Close()
+	_ = file.Close()
 	if err != nil {
 		defaultMapPath = ""
 	}
@@ -107,7 +116,7 @@ func main() {
 		sqlQuery = os.Getenv("REPORT_QUERY")
 	}
 
-	if 0 != len(logpath) {
+	if len(logpath) > 0 {
 		f, err := os.OpenFile(logpath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 		if nil != err {
 			log.Printf("error opening %q for writing", logpath)
@@ -163,7 +172,7 @@ func main() {
 			log.Printf("[ERROR]:\ncould not parse duration %q: %v\n", durstr, err)
 		}
 	}
-	if 0 == duration {
+	if duration == 0 {
 		os.Exit(0)
 		return
 	}
@@ -193,8 +202,8 @@ func copyOut(sqlQuery string, roww RowWriter) error {
 		Catalog:  os.Getenv("MSSQL_CATALOG"),
 	}
 	tableName := os.Getenv("REPORT_TABLE")
-	if 0 == len(sqlQuery) {
-		if 0 == len(tableName) {
+	if len(sqlQuery) == 0 {
+		if len(tableName) == 0 {
 			return fmt.Errorf("you must set one of either REPORT_QUERY or REPORT_TABLE")
 		}
 		sqlQuery = fmt.Sprintf("SELECT * FROM %s", tableName)
@@ -249,7 +258,7 @@ func uploadToS3() error {
 
 	// whatever.csv => whatever-2021-04-20.csv
 	key := os.Getenv("REPORT_S3_KEY")
-	if 0 == len(key) {
+	if len(key) == 0 {
 		key = filepath.Base(outpath)
 	}
 	key = retimestamp(key)
@@ -272,7 +281,7 @@ func uploadToS3() error {
 }
 
 func retimestamp(key string) string {
-	if 0 == len(timestamp) {
+	if len(timestamp) == 0 {
 		return key
 	}
 
@@ -354,7 +363,7 @@ func Report(
 
 	numfields := len(keepers)
 	for rows.Next() {
-		var row []interface{}
+		var row []any
 		row, err = rows.SliceScan()
 		if nil != err {
 			return err
@@ -373,7 +382,7 @@ func Report(
 				fields[csvFieldIndex] = ""
 			case time.Time:
 				// MS SQL Server uses 1900-01-01 00:00:00 for empty date
-				if "1900-01-01 00:00:00" == v.Format("2006-01-02 15:04:05") || v.IsZero() {
+				if v.Format("2006-01-02 15:04:05") == "1900-01-01 00:00:00" || v.IsZero() {
 					fields[csvFieldIndex] = dateEmpty
 				} else {
 					fields[csvFieldIndex] = v.Format(dateFormat)
