@@ -224,6 +224,7 @@ func copyOut(sqlQuery string, roww RowWriter) error {
 		Password: os.Getenv("MSSQL_PASSWORD"),
 		Instance: os.Getenv("MSSQL_INSTANCE"),
 		Catalog:  os.Getenv("MSSQL_CATALOG"),
+		Params:   os.Getenv("MSSQL_PARAMS"), // key and value MUST already be URI-encoded
 	}
 	tableName := os.Getenv("REPORT_TABLE")
 	if len(sqlQuery) == 0 {

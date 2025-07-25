@@ -16,6 +16,7 @@ type Auth struct {
 	Username string // Ex: "SA" (or not, we hope)
 	Password string // Ex: "secret",
 	Catalog  string // Ex: "databasename"
+	Params   string // Ex: "Encrypt=true&Foo=bar" (key and value MUST already be URI-encoded)
 }
 
 // NewConnection returns a new MSSQL connection after some simple checks and
@@ -51,18 +52,28 @@ func (auth *Auth) String() string {
 	if len(auth.Password) < show {
 		auth.Password = "ERR_"
 	}
+	var params string
+	if len(auth.Params) > 0 {
+		params = "&" + auth.Params
+	}
 	return fmt.Sprintf(
-		"sqlserver://%s:%s@%s:%s/%s?database=%s",
+		"sqlserver://%s:%s@%s:%s/%s?database=%s%s",
 		auth.Username, auth.Password[0:show]+strings.Repeat("*", 12-show), auth.Server,
 		auth.Port, auth.Instance, auth.Catalog,
+		params,
 	)
 }
 
 // SecretString gives back the full, credentialed access string
 func (auth *Auth) SecretString() string {
+	var params string
+	if len(auth.Params) > 0 {
+		params = "&" + auth.Params
+	}
 	return fmt.Sprintf(
-		"sqlserver://%s:%s@%s:%s/%s?database=%s",
+		"sqlserver://%s:%s@%s:%s/%s?database=%s%s",
 		auth.Username, auth.Password, auth.Server,
 		auth.Port, auth.Instance, auth.Catalog,
+		params,
 	)
 }
