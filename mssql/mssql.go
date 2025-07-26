@@ -16,7 +16,7 @@ type Auth struct {
 	Username string // Ex: "SA" (or not, we hope)
 	Password string // Ex: "secret",
 	Catalog  string // Ex: "databasename"
-	Params   string // Ex: "Encrypt=true&Foo=bar" (key and value MUST already be URI-encoded)
+	Params   string // Ex: "Encrypt=true&TrustServerCertificate=true" (key and value MUST already be URI-encoded)
 }
 
 // NewConnection returns a new MSSQL connection after some simple checks and
