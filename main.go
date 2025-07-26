@@ -126,40 +126,8 @@ func main() {
 		}
 	}
 
-	var out io.WriteCloser = os.Stdout
-	if !useStdout {
-		if len(outpath) == 0 {
-			outpath = "out.csv"
-			if asJSON {
-				outpath = "out.json"
-			}
-		}
-		tspath = retimestamp(outpath)
-		var err error
-		out, err = os.OpenFile(tspath, os.O_CREATE|os.O_RDWR, 0644)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "could not open %q: %v", tspath, err)
-			os.Exit(1)
-		}
-	}
-
-	var roww RowWriter
-	if asJSON {
-		roww = jsonwriter.NewWriter(out)
-	} else {
-		runes := []rune(commaStr)
-		comma := runes[0]
-		csvw := csv.NewWriter(out)
-		csvw.Comma = comma
-		roww = csvw
-	}
-	defer func() {
-		// you have to let the csv know when to end
-		roww.Flush()
-	}()
-
 	// Copy once, right away
-	if err := copyOut(sqlQuery, roww); nil != err {
+	if err := writeRows(useStdout, sqlQuery, outpath, commaStr); nil != err {
 		log.Printf("[ERROR]:\n%v\n", err)
 		os.Exit(1)
 		return
@@ -181,13 +149,69 @@ func main() {
 	// (note: this may actually drift over the course of months)
 	for {
 		time.Sleep(duration)
-		if err := copyOut(sqlQuery, roww); nil != err {
+		if err := writeRows(useStdout, sqlQuery, outpath, commaStr); nil != err {
 			log.Printf("[ERROR]:\n%v\n", err)
-			return
+			continue
 		}
 
 		log.Printf("Waiting %s", duration)
 	}
+}
+
+func writeRows(useStdout bool, sqlQuery, outpath, commaStr string) error {
+	out, err := getWriteCloser(useStdout, outpath)
+	if err != nil {
+		return err
+	}
+	roww := getRowWriter(out, commaStr)
+	err = copyOut(sqlQuery, roww)
+	roww.Flush()
+	if !useStdout || err != nil {
+		_ = out.Close()
+	}
+	if err == nil {
+		log.Printf("[CSV] Wrote %q\n", tspath)
+
+		if len(os.Getenv("AWS_SECRET_ACCESS_KEY")) > 0 {
+			if err := uploadToS3(); nil != err {
+				log.Printf("could not upload: %v", err)
+			}
+		}
+	}
+	return err
+}
+
+func getWriteCloser(useStdout bool, outpath string) (io.WriteCloser, error) {
+	var out io.WriteCloser = os.Stdout
+	if !useStdout {
+		if len(outpath) == 0 {
+			outpath = "out.csv"
+			if asJSON {
+				outpath = "out.json"
+			}
+		}
+		tspath = retimestamp(outpath)
+		var err error
+		out, err = os.OpenFile(tspath, os.O_CREATE|os.O_RDWR, 0644)
+		if err != nil {
+			return nil, fmt.Errorf("could not open %q: %w", tspath, err)
+		}
+	}
+	return out, nil
+}
+
+func getRowWriter(out io.Writer, commaStr string) RowWriter {
+	var roww RowWriter
+	if asJSON {
+		roww = jsonwriter.NewWriter(out)
+	} else {
+		runes := []rune(commaStr)
+		comma := runes[0]
+		csvw := csv.NewWriter(out)
+		csvw.Comma = comma
+		roww = csvw
+	}
+	return roww
 }
 
 func copyOut(sqlQuery string, roww RowWriter) error {
@@ -231,13 +255,6 @@ func copyOut(sqlQuery string, roww RowWriter) error {
 	err = Report(db, sqlQuery, mappings, roww)
 	if nil != err {
 		return fmt.Errorf("could not report: %w", err)
-	}
-	log.Printf("[CSV] Wrote %q\n", tspath)
-
-	if len(os.Getenv("AWS_SECRET_ACCESS_KEY")) > 0 {
-		if err := uploadToS3(); nil != err {
-			log.Printf("could not upload: %v", err)
-		}
 	}
 	return nil
 }
