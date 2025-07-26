@@ -336,7 +336,6 @@ func Report(
 	// maps between database column order and csv field order
 	keepers := map[DBColIndex]CSVFieldIndex{}
 	allcols, err := rows.Columns()
-	fmt.Fprintf(os.Stderr, "DEBUG allcols: %v\n", allcols)
 	if err != nil {
 		return fmt.Errorf("could not get column names: %w", err)
 	}
@@ -353,7 +352,6 @@ func Report(
 			keepers[dbColIndex] = csvFieldIndex
 		}
 	}
-	fmt.Fprintf(os.Stderr, "DEBUG mappings, keepers: %v %v\n", mappings, keepers)
 
 	// Write Header
 	err = roww.Write(fieldnames)
