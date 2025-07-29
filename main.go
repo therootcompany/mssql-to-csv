@@ -126,6 +126,12 @@ func main() {
 		}
 	}
 
+	if useStdout {
+		defer func() {
+			_ = os.Stdout.Close()
+		}()
+	}
+
 	// Copy once, right away
 	if err := writeRows(useStdout, sqlQuery, outpath, commaStr); nil != err {
 		log.Printf("[ERROR]:\n%v\n", err)
