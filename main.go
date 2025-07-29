@@ -338,7 +338,11 @@ func Report(
 	db *sqlx.DB, sqlQuery string, mappings []mapper.NamePair, roww RowWriter,
 ) error {
 	dateFormat := os.Getenv("REPORT_DATE_FORMAT")
+	if len(dateFormat) == 0 {
+		dateFormat = "2006-01-02T15:04:05.000Z"
+	}
 	dateEmpty := os.Getenv("REPORT_DATE_EMPTY")
+	nullString := os.Getenv("REPORT_NULL_STRING")
 
 	rows, err := db.Queryx(sqlQuery)
 	if err != nil {
@@ -401,10 +405,10 @@ func Report(
 			}
 			switch v := j.(type) {
 			case nil:
-				fields[csvFieldIndex] = ""
+				fields[csvFieldIndex] = nullString
 			case time.Time:
 				// MS SQL Server uses 1900-01-01 00:00:00 for empty date
-				if v.Format("2006-01-02 15:04:05") == "1900-01-01 00:00:00" || v.IsZero() {
+				if v.IsZero() || v.Format("2006-01-02 15:04:05") == "1900-01-01 00:00:00" {
 					fields[csvFieldIndex] = dateEmpty
 				} else {
 					fields[csvFieldIndex] = v.Format(dateFormat)
