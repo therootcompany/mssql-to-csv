@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -480,6 +481,10 @@ func Report(
 	if err != nil {
 		return fmt.Errorf("could not get column names: %w", err)
 	}
+	colTypes, err := rows.ColumnTypes()
+	if err != nil {
+		return fmt.Errorf("could not get column types: %w", err)
+	}
 	for dbColIndex := range allcols {
 		if len(mappings) == 0 {
 			fieldname := allcols[dbColIndex]
@@ -528,6 +533,28 @@ func Report(
 				}
 			case string:
 				fields[csvFieldIndex] = v
+			case []byte:
+				// Numeric types (DECIMAL/NUMERIC, MONEY) and UNIQUEIDENTIFIER
+				// scan as []byte from go-mssqldb. Convert to string.
+				// Actual binary types (VARBINARY, BINARY, IMAGE) stay as-is.
+				switch colTypes[i].DatabaseTypeName() {
+				// go-mssqldb reports both DECIMAL and NUMERIC columns as "DECIMAL";
+				// NUMERIC is just a T-SQL alias for DECIMAL and is never returned
+				// by DatabaseTypeName().
+				case "DECIMAL":
+					if f, err := strconv.ParseFloat(string(v), 64); err == nil {
+						fields[csvFieldIndex] = strconv.FormatFloat(f, 'f', -1, 64)
+					} else {
+						fields[csvFieldIndex] = string(v)
+					}
+				case "MONEY", "SMALLMONEY":
+					// Keep as string — float64 loses precision for large MONEY values.
+					fields[csvFieldIndex] = string(v)
+				case "UNIQUEIDENTIFIER":
+					fields[csvFieldIndex] = formatUUID(v)
+				default:
+					fields[csvFieldIndex] = fmt.Sprintf("%v", v)
+				}
 			case fmt.Stringer:
 				if nil != v {
 					fields[csvFieldIndex] = v.String()
@@ -546,4 +573,25 @@ func Report(
 	}
 
 	return nil
+}
+
+// formatUUID converts a 16-byte MSSQL UNIQUEIDENTIFIER to the standard
+// UUID text format. MSSQL stores the first three groups (time_low,
+// time_mid, time_hi_and_version) in little-endian byte order, and the
+// last two groups (clock_seq_and_node) in big-endian. The standard
+// UUID string representation requires this mixed-endian layout.
+func formatUUID(b []byte) string {
+	if len(b) != 16 {
+		return fmt.Sprintf("%x", b)
+	}
+	// b: [time_low(4) time_mid(2) time_hi(2) clock_seq(2) node(6)]
+	// UUID: time_low-time_mid-time_hi-clock_seq-node
+	// First three groups are little-endian in MSSQL storage.
+	return fmt.Sprintf("%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+		b[3], b[2], b[1], b[0], // time_low (LE)
+		b[5], b[4], // time_mid (LE)
+		b[7], b[6], // time_hi (LE)
+		b[8], b[9], // clock_seq (BE)
+		b[10], b[11], b[12], b[13], b[14], b[15], // node (BE)
+	)
 }
