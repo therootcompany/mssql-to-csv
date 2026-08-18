@@ -189,6 +189,7 @@ func main() {
 		_, _ = fmt.Fprintf(os.Stderr, "  REPORT_DATE_FORMAT      Go date format for datetime columns\n")
 		_, _ = fmt.Fprintf(os.Stderr, "  REPORT_DATE_EMPTY       Value for empty/zero dates\n")
 		_, _ = fmt.Fprintf(os.Stderr, "  REPORT_NULL_STRING      Value for NULL fields\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  REPORT_DECIMAL_AS_FLOAT Parse DECIMAL/NUMERIC as float64 (default: false)\n")
 		_, _ = fmt.Fprintf(os.Stderr, "  REPORT_S3_KEY           S3 key prefix for uploads\n")
 		_, _ = fmt.Fprintf(os.Stderr, "  AWS_ACCESS_KEY_ID       AWS access key\n")
 		_, _ = fmt.Fprintf(os.Stderr, "  AWS_SECRET_ACCESS_KEY   AWS secret key\n")
@@ -460,6 +461,7 @@ func Report(
 	dateFormat := cmp.Or(os.Getenv("REPORT_DATE_FORMAT"), "2006-01-02T15:04:05.000Z")
 	dateEmpty := os.Getenv("REPORT_DATE_EMPTY")
 	nullString := os.Getenv("REPORT_NULL_STRING")
+	decimalAsFloat := strings.EqualFold(os.Getenv("REPORT_DECIMAL_AS_FLOAT"), "true")
 
 	rows, err := db.Queryx(sqlQuery)
 	if err != nil {
@@ -545,8 +547,12 @@ func Report(
 				// NUMERIC is just a T-SQL alias for DECIMAL and is never returned
 				// by DatabaseTypeName().
 				case "DECIMAL":
-					if f, err := strconv.ParseFloat(string(v), 64); err == nil {
-						fields[csvFieldIndex] = strconv.FormatFloat(f, 'f', -1, 64)
+					if decimalAsFloat {
+						if f, err := strconv.ParseFloat(string(v), 64); err == nil {
+							fields[csvFieldIndex] = strconv.FormatFloat(f, 'f', -1, 64)
+						} else {
+							fields[csvFieldIndex] = string(v)
+						}
 					} else {
 						fields[csvFieldIndex] = string(v)
 					}
