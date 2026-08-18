@@ -135,39 +135,16 @@ func main() {
 
 	// 3. Flags override everything
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.BoolVar(&cfg.asJSON, "json", false,
-		"output rows as JSON arrays",
-	)
-	fs.StringVar(&cfg.outpath, "csv", "",
-		"deprecated, see --out",
-	)
-	fs.StringVar(&cfg.outpath, "out", "",
-		"full path to csv or json output, or '-' for stdout (default out.csv or out.json)",
-	)
-	fs.StringVar(&cfg.envpath, "env", envFile,
-		"full path to the .env file with settings and MS SQL & S3 credentials",
-	)
-	fs.StringVar(&cfg.envpath, "env-file", envFile,
-		"full path to the .env file (alias for -env)",
-	)
-	fs.StringVar(&cfg.mappath, "map", defaultMapPath,
-		"full path to the map.txt that maps MS SQL columns to CSV fields",
-	)
-	fs.StringVar(&cfg.commaStr, "comma", ",",
-		"replace ',' with tab, or almost any non-newline unicode character",
-	)
-	fs.StringVar(&cfg.logpath, "log", "",
-		"full path to the log file (or stdout if none supplied)",
-	)
-	fs.StringVar(&cfg.timestamp, "timestamp", "2006-01-02_15.04.05",
-		"format of timestamp suffix for csv output and S3 key, or '' for no timestamp",
-	)
-	fs.StringVar(&cfg.sqlQuery, "query", cfg.sqlQuery,
-		"the query to run (falls back to REPORT_QUERY)",
-	)
-	fs.BoolVar(&cfg.debug, "debug", false,
-		"enable additional logging",
-	)
+	fs.BoolVar(&cfg.asJSON, "json", false, "output rows as JSON arrays")
+	fs.StringVar(&cfg.outpath, "csv", "", "deprecated, see --out")
+	fs.StringVar(&cfg.outpath, "out", "", "full path to csv or json output, or '-' for stdout (default out.csv or out.json)")
+	_ = fs.String("env-file", ".env", "full path to the .env file (alias for -env)")
+	fs.StringVar(&cfg.mappath, "map", defaultMapPath, "full path to the map.txt that maps MS SQL columns to CSV fields")
+	fs.StringVar(&cfg.commaStr, "comma", ",", "replace ',' with tab, or almost any non-newline unicode character")
+	fs.StringVar(&cfg.logpath, "log", "", "full path to the log file (or stdout if none supplied)")
+	fs.StringVar(&cfg.timestamp, "timestamp", "2006-01-02_15.04.05", "format of timestamp suffix for csv output and S3 key, or '' for no timestamp")
+	fs.StringVar(&cfg.sqlQuery, "query", cfg.sqlQuery, "the query to run (falls back to REPORT_QUERY)")
+	fs.BoolVar(&cfg.debug, "debug", false, "enable additional logging")
 	_ = fs.Bool("version", false, "show version info")
 
 	// Document accepted env vars in usage
@@ -205,7 +182,7 @@ func main() {
 			os.Exit(0)
 		case "help", "-help", "--help":
 			printVersion(os.Stdout)
-			fmt.Fprintln(os.Stdout, "")
+			_, _ = fmt.Fprintln(os.Stdout, "")
 			fs.SetOutput(os.Stdout)
 			fs.Usage()
 			os.Exit(0)
@@ -227,16 +204,6 @@ func main() {
 			useStdout = f.Value.String() == "-"
 		}
 	})
-
-	// Reload env file if fs.Parse set a different path than what we
-	// peeked (handles --env-file=path syntax that peekOption misses).
-	if cfg.envpath != envFile {
-		// Flag was explicitly set to a different path than peeked
-		if err := godotenv.Load(cfg.envpath); err != nil {
-			log.Printf("could not load env file %q: %v", cfg.envpath, err)
-			os.Exit(2)
-		}
-	}
 
 	cfg.sqlQuery = cmp.Or(cfg.sqlQuery, os.Getenv("REPORT_QUERY"))
 
