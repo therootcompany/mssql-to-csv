@@ -145,8 +145,6 @@ func main() {
 	fs.StringVar(&cfg.timestamp, "timestamp", "2006-01-02_15.04.05", "format of timestamp suffix for csv output and S3 key, or '' for no timestamp")
 	fs.StringVar(&cfg.sqlQuery, "query", cfg.sqlQuery, "the query to run (falls back to REPORT_QUERY)")
 	fs.BoolVar(&cfg.debug, "debug", false, "enable additional logging")
-	_ = fs.Bool("version", false, "show version info")
-
 	// Document accepted env vars in usage
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(os.Stderr, "USAGE\n  %s [flags]\n\n", name)
@@ -196,6 +194,24 @@ func main() {
 		}
 		os.Exit(2)
 	}
+	if args := fs.Args(); len(args) > 0 {
+		log.Printf("usage error: unexpected argument %q", args[0])
+		fs.Usage()
+		os.Exit(2)
+	}
+	if err := validateComma(cfg.commaStr); err != nil {
+		log.Printf("usage error: %v", err)
+		fs.Usage()
+		os.Exit(2)
+	}
+
+	durstr := strings.TrimSpace(os.Getenv("REPORT_FREQUENCY"))
+	duration, err := time.ParseDuration(durstr)
+	if durstr != "" && err != nil {
+		log.Printf("invalid REPORT_FREQUENCY %q: %v", durstr, err)
+		os.Exit(1)
+	}
+
 	// fs.Visit only sees flags that were explicitly set, so it must
 	// run after fs.Parse. If -out or -csv was given a real path (not
 	// "-"), write to that file instead of stdout.
@@ -230,13 +246,6 @@ func main() {
 		return
 	}
 
-	durstr := strings.TrimSpace(os.Getenv("REPORT_FREQUENCY"))
-	duration, err := time.ParseDuration(durstr)
-	if len(durstr) > 0 {
-		if nil != err {
-			log.Printf("[ERROR]:\ncould not parse duration %q: %v\n", durstr, err)
-		}
-	}
 	if duration == 0 {
 		os.Exit(0)
 		return
@@ -302,13 +311,25 @@ func getRowWriter(out io.Writer, commaStr string) RowWriter {
 	if cfg.asJSON {
 		roww = jsonwriter.NewWriter(out)
 	} else {
-		runes := []rune(commaStr)
-		comma := runes[0]
 		csvw := csv.NewWriter(out)
-		csvw.Comma = comma
+		csvw.Comma = rune(commaStr[0])
 		roww = csvw
 	}
 	return roww
+}
+
+func validateComma(commaStr string) error {
+	if len(commaStr) != 1 {
+		return errors.New("--comma must be exactly one ASCII byte")
+	}
+	comma := commaStr[0]
+	if comma > 0x7f {
+		return errors.New("--comma must be an ASCII byte")
+	}
+	if comma == 0 || comma == '"' || comma == '\r' || comma == '\n' {
+		return fmt.Errorf("invalid --comma character %q", comma)
+	}
+	return nil
 }
 
 func copyOut(sqlQuery string, roww RowWriter) error {
