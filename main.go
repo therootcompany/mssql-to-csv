@@ -1,5 +1,3 @@
-//go:generate go run git.rootprojects.org/root/go-gitver/v2
-
 package main
 
 import (

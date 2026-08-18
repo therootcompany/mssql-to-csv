@@ -5,7 +5,6 @@ go 1.23.0
 toolchain go1.24.4
 
 require (
-	git.rootprojects.org/root/go-gitver/v2 v2.0.2
 	github.com/aws/aws-sdk-go v1.38.20
 	github.com/denisenkom/go-mssqldb v0.9.0
 	github.com/jmoiron/sqlx v1.3.3
