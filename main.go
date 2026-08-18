@@ -1,17 +1,18 @@
 package main
 
 import (
+	"cmp"
 	"encoding/csv"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
-
-	"golang.org/x/term"
 
 	"github.com/therootcompany/mssql-to-csv/jsonwriter"
 	"github.com/therootcompany/mssql-to-csv/mapper"
@@ -29,97 +30,217 @@ var (
 	version = "0.0.0-pre0+0000000"
 	date    = "0000-00-00T00:00:00+0000"
 
-	timestamp string
+	name         = "mssql-to-csv"
+	licenseYear  = "2021"
+	licenseOwner = "The Root Group, LLC & AJ ONeal"
+	licenseType  = "MPL-2.0"
+)
+
+// MainConfig holds all CLI flag values and runtime state.
+type MainConfig struct {
+	cmdname   string
+	here      string
 	envpath   string
 	outpath   string
 	asJSON    bool
-	tspath    string
 	mappath   string
+	commaStr  string
+	logpath   string
+	timestamp string
+	sqlQuery  string
 	debug     bool
-)
+	tspath    string // set at runtime by getWriteCloser
+}
 
-func main() {
-	var logpath string
-	var commaStr string
-	var sqlQuery string
+var cfg MainConfig
 
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "version":
-			fallthrough
-		case "-version":
-			fallthrough
-		case "--version":
-			fallthrough
-		case "-V":
-			fmt.Printf("mssql-to-csv v%s (%s) %s\n", version, commit[:7], date)
-			os.Exit(0)
-			return
+// peekOption scans raw args for a flag and returns its value (or a default).
+// Handles both "--flag value" and "--flag=value" syntax.
+func peekOption(args []string, names []string, def string) (string, bool) {
+	for i := range len(args) {
+		for _, name := range names {
+			if args[i] == name && i+1 < len(args) {
+				return args[i+1], true
+			}
+			// Handle --flag=value syntax
+			if strings.HasPrefix(args[i], name+"=") {
+				return args[i][len(name)+1:], true
+			}
 		}
 	}
+	return def, false
+}
 
-	cmdname := os.Args[0]
-	here := filepath.Dir(cmdname)
-	defaultMapPath := filepath.Join(here, "map.txt")
+// isTTYish reports whether f is a terminal device.
+func isTTYish(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	m := os.ModeDevice | os.ModeCharDevice
+	return fi.Mode()&m == m
+}
+
+// printVersion writes version and license information to w.
+// When commit is still the default (no ldflags), falls back to
+// runtime/debug.ReadBuildInfo() for VCS metadata.
+func printVersion(w io.Writer) {
+	if commit == "0000000" {
+		if bi, ok := debug.ReadBuildInfo(); ok {
+			for _, s := range bi.Settings {
+				switch s.Key {
+				case "vcs.revision":
+					commit = s.Value[:7]
+				case "vcs.time":
+					date = s.Value
+				case "vcs.modified":
+					if s.Value == "true" {
+						date += "+dirty"
+					}
+				}
+			}
+		}
+	}
+	_, _ = fmt.Fprintf(w, "%s v%s (%s) %s\n", name, version, commit[:7], date)
+	_, _ = fmt.Fprintf(w, "Copyright (C) %s %s\n", licenseYear, licenseOwner)
+	_, _ = fmt.Fprintf(w, "Licensed under %s\n", licenseType)
+}
+
+func main() {
+	cfg.cmdname = os.Args[0]
+	cfg.here = filepath.Dir(cfg.cmdname)
+
+	// 1. Peek for --env-file / -env and load early so env vars can
+	//    influence flag defaults. Flags still override env vars.
+	defaultEnvPath := filepath.Join(cfg.here, ".env")
+	envFile, hasEnvFlag := peekOption(os.Args[1:], []string{"-env-file", "--env-file", "-env", "--env"}, defaultEnvPath)
+	if err := godotenv.Load(envFile); err != nil {
+		if hasEnvFlag {
+			log.Printf("could not load env file %q: %v", envFile, err)
+			os.Exit(2)
+		}
+		// Default .env missing — silently continue
+	}
+
+	defaultMapPath := filepath.Join(cfg.here, "map.txt")
 	file, err := os.OpenFile(defaultMapPath, os.O_RDONLY, 0)
 	_ = file.Close()
 	if err != nil {
 		defaultMapPath = ""
 	}
 
-	flag.BoolVar(&asJSON, "json", false,
+	// 2. Let env vars override defaults
+	cfg.sqlQuery = cmp.Or(cfg.sqlQuery, os.Getenv("REPORT_QUERY"))
+
+	// 3. Flags override everything
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.BoolVar(&cfg.asJSON, "json", false,
 		"output rows as JSON arrays",
 	)
-	flag.StringVar(&outpath, "csv", "",
+	fs.StringVar(&cfg.outpath, "csv", "",
 		"deprecated, see --out",
 	)
-	flag.StringVar(&outpath, "out", "",
+	fs.StringVar(&cfg.outpath, "out", "",
 		"full path to csv or json output, or '-' for stdout (default out.csv or out.json)",
 	)
-	flag.StringVar(&envpath, "env", filepath.Join(here, ".env"),
+	fs.StringVar(&cfg.envpath, "env", envFile,
 		"full path to the .env file with settings and MS SQL & S3 credentials",
 	)
-	flag.StringVar(&mappath, "map", defaultMapPath,
+	fs.StringVar(&cfg.envpath, "env-file", envFile,
+		"full path to the .env file (alias for -env)",
+	)
+	fs.StringVar(&cfg.mappath, "map", defaultMapPath,
 		"full path to the map.txt that maps MS SQL columns to CSV fields",
 	)
-	flag.StringVar(&commaStr, "comma", ",",
+	fs.StringVar(&cfg.commaStr, "comma", ",",
 		"replace ',' with tab, or almost any non-newline unicode character",
 	)
-	flag.StringVar(&logpath, "log", "",
+	fs.StringVar(&cfg.logpath, "log", "",
 		"full path to the log file (or stdout if none supplied)",
 	)
-	flag.StringVar(&timestamp, "timestamp", "2006-01-02_15.04.05",
+	fs.StringVar(&cfg.timestamp, "timestamp", "2006-01-02_15.04.05",
 		"format of timestamp suffix for csv output and S3 key, or '' for no timestamp",
 	)
-	flag.StringVar(&sqlQuery, "query", "",
+	fs.StringVar(&cfg.sqlQuery, "query", cfg.sqlQuery,
 		"the query to run (falls back to REPORT_QUERY)",
 	)
-	flag.BoolVar(&debug, "debug", false,
+	fs.BoolVar(&cfg.debug, "debug", false,
 		"enable additional logging",
 	)
-	_ = flag.Bool("version", false, "show version info")
+	_ = fs.Bool("version", false, "show version info")
 
-	useStdout := !term.IsTerminal(int(os.Stdout.Fd()))
-	flag.CommandLine.Visit(func(f *flag.Flag) {
+	// Document accepted env vars in usage
+	fs.Usage = func() {
+		_, _ = fmt.Fprintf(os.Stderr, "USAGE\n  %s [flags]\n\n", name)
+		_, _ = fmt.Fprintf(os.Stderr, "FLAGS\n")
+		fs.PrintDefaults()
+		_, _ = fmt.Fprintf(os.Stderr, "\nENVIRONMENT\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  MSSQL_SERVER            SQL Server hostname\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  MSSQL_PORT              SQL Server port (default 1433)\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  MSSQL_USERNAME          SQL Server username\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  MSSQL_PASSWORD          SQL Server password\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  MSSQL_INSTANCE          SQL Server instance (for named instances)\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  MSSQL_CATALOG           Database name\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  MSSQL_PARAMS            Extra connection params (URI-encoded)\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  REPORT_QUERY            SQL query to run\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  REPORT_TABLE            Table to export (alternative to REPORT_QUERY)\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  REPORT_FREQUENCY        Repeat interval (e.g. 5m, 1h; empty for run-once)\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  REPORT_DATE_FORMAT      Go date format for datetime columns\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  REPORT_DATE_EMPTY       Value for empty/zero dates\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  REPORT_NULL_STRING      Value for NULL fields\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  REPORT_S3_KEY           S3 key prefix for uploads\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  AWS_ACCESS_KEY_ID       AWS access key\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  AWS_SECRET_ACCESS_KEY   AWS secret key\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  AWS_REGION              AWS region\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  AWS_BUCKET              S3 bucket name\n")
+	}
+
+	// Handle -V/--version and help before fs.Parse
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "version", "-version", "--version", "-V":
+			printVersion(os.Stdout)
+			os.Exit(0)
+		case "help", "-help", "--help":
+			printVersion(os.Stdout)
+			fmt.Fprintln(os.Stdout, "")
+			fs.SetOutput(os.Stdout)
+			fs.Usage()
+			os.Exit(0)
+		}
+	}
+
+	useStdout := !isTTYish(os.Stdout)
+	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "out" || f.Name == "csv" {
 			useStdout = f.Value.String() == "-"
 		}
 	})
-	flag.Parse()
-
-	// Use .env if available
-	_ = godotenv.Load(envpath)
-
-	if len(sqlQuery) == 0 {
-		sqlQuery = os.Getenv("REPORT_QUERY")
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
+		os.Exit(2)
 	}
 
-	if len(logpath) > 0 {
-		f, err := os.OpenFile(logpath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	// Reload env file if fs.Parse set a different path than what we
+	// peeked (handles --env-file=path syntax that peekOption misses).
+	if cfg.envpath != envFile {
+		// Flag was explicitly set to a different path than peeked
+		if err := godotenv.Load(cfg.envpath); err != nil {
+			log.Printf("could not load env file %q: %v", cfg.envpath, err)
+			os.Exit(2)
+		}
+	}
+
+	cfg.sqlQuery = cmp.Or(cfg.sqlQuery, os.Getenv("REPORT_QUERY"))
+
+	if len(cfg.logpath) > 0 {
+		f, err := os.OpenFile(cfg.logpath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 		if nil != err {
-			log.Printf("error opening %q for writing", logpath)
+			log.Printf("error opening %q for writing", cfg.logpath)
 		} else {
-			log.Printf("log output to %q", logpath)
+			log.Printf("log output to %q", cfg.logpath)
 			log.SetOutput(f)
 		}
 	}
@@ -131,7 +252,7 @@ func main() {
 	}
 
 	// Copy once, right away
-	if err := writeRows(useStdout, sqlQuery, outpath, commaStr); nil != err {
+	if err := writeRows(useStdout, cfg.sqlQuery, cfg.outpath, cfg.commaStr); nil != err {
 		log.Printf("[ERROR]:\n%v\n", err)
 		os.Exit(1)
 		return
@@ -153,7 +274,7 @@ func main() {
 	// (note: this may actually drift over the course of months)
 	for {
 		time.Sleep(duration)
-		if err := writeRows(useStdout, sqlQuery, outpath, commaStr); nil != err {
+		if err := writeRows(useStdout, cfg.sqlQuery, cfg.outpath, cfg.commaStr); nil != err {
 			log.Printf("[ERROR]:\n%v\n", err)
 			continue
 		}
@@ -174,7 +295,7 @@ func writeRows(useStdout bool, sqlQuery, outpath, commaStr string) error {
 		_ = out.Close()
 	}
 	if err == nil {
-		log.Printf("[CSV] Wrote %q\n", tspath)
+		log.Printf("[CSV] Wrote %q\n", cfg.tspath)
 
 		if len(os.Getenv("AWS_SECRET_ACCESS_KEY")) > 0 {
 			if err := uploadToS3(); nil != err {
@@ -190,15 +311,15 @@ func getWriteCloser(useStdout bool, outpath string) (io.WriteCloser, error) {
 	if !useStdout {
 		if len(outpath) == 0 {
 			outpath = "out.csv"
-			if asJSON {
+			if cfg.asJSON {
 				outpath = "out.json"
 			}
 		}
-		tspath = retimestamp(outpath)
+		cfg.tspath = retimestamp(outpath)
 		var err error
-		out, err = os.OpenFile(tspath, os.O_CREATE|os.O_RDWR, 0644)
+		out, err = os.OpenFile(cfg.tspath, os.O_CREATE|os.O_RDWR, 0644)
 		if err != nil {
-			return nil, fmt.Errorf("could not open %q: %w", tspath, err)
+			return nil, fmt.Errorf("could not open %q: %w", cfg.tspath, err)
 		}
 	}
 	return out, nil
@@ -206,7 +327,7 @@ func getWriteCloser(useStdout bool, outpath string) (io.WriteCloser, error) {
 
 func getRowWriter(out io.Writer, commaStr string) RowWriter {
 	var roww RowWriter
-	if asJSON {
+	if cfg.asJSON {
 		roww = jsonwriter.NewWriter(out)
 	} else {
 		runes := []rune(commaStr)
@@ -247,8 +368,8 @@ func copyOut(sqlQuery string, roww RowWriter) error {
 	}
 
 	var mappings []mapper.NamePair = nil
-	if len(mappath) > 0 {
-		mappings, err = mapper.Parse(mappath, func(err error) error {
+	if len(cfg.mappath) > 0 {
+		mappings, err = mapper.Parse(cfg.mappath, func(err error) error {
 			log.Printf("line error: %v\n", err)
 			return nil
 		})
@@ -279,10 +400,7 @@ func uploadToS3() error {
 	bucket := os.Getenv("AWS_BUCKET")
 
 	// whatever.csv => whatever-2021-04-20.csv
-	key := os.Getenv("REPORT_S3_KEY")
-	if len(key) == 0 {
-		key = filepath.Base(outpath)
-	}
+	key := cmp.Or(os.Getenv("REPORT_S3_KEY"), filepath.Base(cfg.outpath))
 	key = retimestamp(key)
 
 	u, err := uploader.New(awsAuth)
@@ -290,9 +408,9 @@ func uploadToS3() error {
 		return fmt.Errorf("could not upload: %w", err)
 	}
 
-	csvr, err := os.Open(tspath)
+	csvr, err := os.Open(cfg.tspath)
 	if nil != err {
-		return fmt.Errorf("could not open %q: %v", tspath, err)
+		return fmt.Errorf("could not open %q: %v", cfg.tspath, err)
 	}
 	if err := u.Upload(bucket, key, csvr); nil != err {
 		return fmt.Errorf("could not upload: %w", err)
@@ -303,7 +421,7 @@ func uploadToS3() error {
 }
 
 func retimestamp(key string) string {
-	if len(timestamp) == 0 {
+	if len(cfg.timestamp) == 0 {
 		return key
 	}
 
@@ -315,7 +433,7 @@ func retimestamp(key string) string {
 	key = key[:len(key)-len(ext)]
 
 	// whatever_2006-01-02_15.04.05.csv
-	key = fmt.Sprintf("%s_%s%s", key, time.Now().Format(timestamp), ext)
+	key = fmt.Sprintf("%s_%s%s", key, time.Now().Format(cfg.timestamp), ext)
 	return key
 }
 
@@ -335,10 +453,7 @@ type CSVFieldName = string
 func Report(
 	db *sqlx.DB, sqlQuery string, mappings []mapper.NamePair, roww RowWriter,
 ) error {
-	dateFormat := os.Getenv("REPORT_DATE_FORMAT")
-	if len(dateFormat) == 0 {
-		dateFormat = "2006-01-02T15:04:05.000Z"
-	}
+	dateFormat := cmp.Or(os.Getenv("REPORT_DATE_FORMAT"), "2006-01-02T15:04:05.000Z")
 	dateEmpty := os.Getenv("REPORT_DATE_EMPTY")
 	nullString := os.Getenv("REPORT_NULL_STRING")
 
