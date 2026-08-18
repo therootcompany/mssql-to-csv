@@ -212,17 +212,20 @@ func main() {
 	}
 
 	useStdout := !isTTYish(os.Stdout)
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "out" || f.Name == "csv" {
-			useStdout = f.Value.String() == "-"
-		}
-	})
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			os.Exit(0)
 		}
 		os.Exit(2)
 	}
+	// fs.Visit only sees flags that were explicitly set, so it must
+	// run after fs.Parse. If -out or -csv was given a real path (not
+	// "-"), write to that file instead of stdout.
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "out" || f.Name == "csv" {
+			useStdout = f.Value.String() == "-"
+		}
+	})
 
 	// Reload env file if fs.Parse set a different path than what we
 	// peeked (handles --env-file=path syntax that peekOption misses).
